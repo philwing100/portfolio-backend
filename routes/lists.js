@@ -4,10 +4,23 @@ const pool = require('../databaseConnection/database');
 const auth = require('./auth');
 const router = express.Router();
 
+const parseJsonIfString = (value, fallback = null) => {
+  if (value == null) return fallback;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (err) {
+      return fallback;
+    }
+  }
+  if (typeof value === 'object') return value;
+  return fallback;
+};
+
 // Update list object (parent_page/date) or make a new one
 const createList = async function createList(req, res) {
   try {
-    const listData = JSON.parse(req.body.data);
+    const listData = parseJsonIfString(req.body?.data, req.body?.data);
     const { parent_page: parentPage, date: listDate, lists } = listData || {};
     const userId = req.user.id;
 
@@ -59,7 +72,7 @@ const getList = async function getList(req, res) {
         data: {
           parent_page: row.parent_page,
           date: row.list_date,
-          lists: row.lists_json ? JSON.parse(row.lists_json) : []
+          lists: parseJsonIfString(row.lists_json, [])
         }
       });
     }
