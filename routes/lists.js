@@ -17,11 +17,49 @@ const parseJsonIfString = (value, fallback = null) => {
   return fallback;
 };
 
+const normalizeValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = normalizeValue(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+};
+
+const stableStringify = (value) => JSON.stringify(normalizeValue(value));
+
+const normalizeTimestampInput = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+};
+
+const toMySqlDateTime = (isoString) => {
+  if (!isoString) return null;
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+};
+
+const toIsoTimestamp = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+};
+
 // Update list object (parent_page/date) or make a new one
 const createList = async function createList(req, res) {
   try {
     const listData = parseJsonIfString(req.body?.data, req.body?.data);
-    const { parent_page: parentPage, date: listDate, lists } = listData || {};
+    const { parent_page: parentPage, date: listDate, lists, timestamp } = listData || {};
     const userId = req.user.id;
 
     if (!userId) {
@@ -33,12 +71,49 @@ const createList = async function createList(req, res) {
     }
 
     const promisePool = pool.promise();
-    await promisePool.query(
-      'CALL Update_list_object(?, ?, ?, ?)',
-      [userId, parentPage, listDate, JSON.stringify(lists)]
+    const [existingRows] = await promisePool.query(
+      'CALL Fetch_list_object(?, ?, ?)',
+      [userId, parentPage, listDate]
     );
 
-    return res.status(201).json({ message: 'List created successfully' });
+    const existingRow = existingRows?.[0]?.[0];
+    if (existingRow) {
+      const existingLists = parseJsonIfString(existingRow.lists_json, []);
+      const normalizedExisting = stableStringify(existingLists);
+      const normalizedIncoming = stableStringify(lists);
+
+      if (normalizedIncoming === normalizedExisting) {
+        return res.status(200).json({
+          success: true,
+          message: 'List unchanged',
+          data: {
+            parent_page: existingRow.parent_page,
+            date: existingRow.list_date,
+            lists: existingLists,
+            timestamp: toIsoTimestamp(existingRow.list_timestamp)
+          }
+        });
+      }
+    }
+
+    const resolvedTimestamp = normalizeTimestampInput(timestamp) || new Date().toISOString();
+    const resolvedTimestampDb = toMySqlDateTime(resolvedTimestamp);
+
+    await promisePool.query(
+      'CALL Update_list_object(?, ?, ?, ?, ?)',
+      [userId, parentPage, listDate, JSON.stringify(lists), resolvedTimestampDb]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'List created successfully',
+      data: {
+        parent_page: parentPage,
+        date: listDate,
+        lists,
+        timestamp: resolvedTimestamp
+      }
+    });
   } catch (err) {
     console.error('Error creating list:', err);
     return res.status(500).json({ message: 'Error creating list' });
@@ -72,7 +147,8 @@ const getList = async function getList(req, res) {
         data: {
           parent_page: row.parent_page,
           date: row.list_date,
-          lists: parseJsonIfString(row.lists_json, [])
+          lists: parseJsonIfString(row.lists_json, []),
+          timestamp: toIsoTimestamp(row.list_timestamp)
         }
       });
     }

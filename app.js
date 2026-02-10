@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const passport = require('passport');
 const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const pool = require('./databaseConnection/database'); // Database pool connection
 const jwt = require('jsonwebtoken'); // Required for JWT verification
@@ -14,6 +15,7 @@ const frontendPath = port == 3000 ? "http://localhost:8080" : "https://phillip-r
 // Middleware to parse JSON and URL-encoded data
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 // Enable CORS with credentials to allow cookie usage across origins
 app.use(cors({

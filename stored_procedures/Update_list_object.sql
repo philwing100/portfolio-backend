@@ -2,7 +2,8 @@ CREATE DEFINER="avnadmin"@"%" PROCEDURE "Update_list_object"(
     IN userID INT,
     IN parentPage VARCHAR(255),
     IN listDate DATE,
-    IN listsJson JSON
+    IN listsJson JSON,
+    IN listTimestamp DATETIME
 )
 BEGIN
     IF EXISTS (
@@ -10,10 +11,11 @@ BEGIN
         WHERE l.userID = userID AND l.parent_page = parentPage AND l.list_date = listDate
     ) THEN
         UPDATE lists
-        SET lists_json = listsJson
+        SET lists_json = listsJson,
+            list_timestamp = listTimestamp
         WHERE userID = userID AND parent_page = parentPage AND list_date = listDate;
     ELSE
-        INSERT INTO lists (userID, parent_page, list_date, lists_json)
-        VALUES (userID, parentPage, listDate, listsJson);
+        INSERT INTO lists (userID, parent_page, list_date, lists_json, list_timestamp)
+        VALUES (userID, parentPage, listDate, listsJson, listTimestamp);
     END IF;
 END

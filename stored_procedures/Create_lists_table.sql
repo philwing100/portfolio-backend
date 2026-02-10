@@ -7,6 +7,7 @@ CREATE TABLE lists (
   parent_page VARCHAR(255),                  -- Logical owner of the list object
   list_date DATE,                            -- Date the lists belong to
   lists_json JSON,                           -- JSON payload with lists/items
+  list_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, -- Timestamp for the list payload
   last_modified DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- Last modified timestamp
   userID INT NOT NULL,                      -- User ID of the creator of the list
   FOREIGN KEY (userID) REFERENCES users(userID), -- Assuming there is a `users` table with a `user_id` column

@@ -3,12 +3,18 @@ const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const pool = require('../databaseConnection/database'); // Database connection
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const router = express.Router();
 
 const port = process.env.FRONTENDPORT || 3000;
 const frontendPath = port == 3000 ? "http://localhost:8080" : "https://phillip-ring.vercel.app";
+const accessTokenTtl = '24h';
+const refreshTokenTtl = '7d';
+const refreshTokenMs = 7 * 24 * 60 * 60 * 1000;
+const refreshTokenSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
 
 // Google OAuth strategy
 passport.use(new GoogleStrategy({
@@ -59,14 +65,131 @@ router.get('/google/callback',
     const token = jwt.sign(
       { id: req.user.userID, email: req.user.email },  // Create a payload with user data
       process.env.JWT_SECRET,  // Secret key for JWT signing
-      { expiresIn: '2h' }  // Set token expiry time
+      { expiresIn: accessTokenTtl }  // Set token expiry time
     );
+
+    const refreshToken = jwt.sign(
+      { id: req.user.userID, email: req.user.email },
+      refreshTokenSecret,
+      { expiresIn: refreshTokenTtl }
+    );
+
+    const refreshTokenHash = crypto
+      .createHash('sha256')
+      .update(refreshToken)
+      .digest('hex');
+
+    const sessionId = uuidv4();
+    const refreshExpiresAt = new Date(Date.now() + refreshTokenMs);
+    const sessionData = JSON.stringify({
+      userAgent: req.headers['user-agent'] || null,
+      ip: req.ip || null
+    });
+
+    pool
+      .promise()
+      .query(
+        'CALL UpsertSessionWithRefresh(?, ?, ?, ?, ?, ?)',
+        [
+          sessionId,
+          req.user.userID,
+          refreshExpiresAt.getTime(),
+          sessionData,
+          refreshTokenHash,
+          refreshExpiresAt
+        ]
+      )
+      .catch((err) => {
+        console.warn('Error storing refresh token session:', err);
+      });
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      maxAge: refreshTokenMs
+    });
 
     console.log('assigniing token on login: '+ token);
     const redirectUrl = `${frontendPath}/login?token=${token}`;
     res.redirect(redirectUrl);  // Redirect to the frontend with the token in the URL
   }
 );
+
+// Refresh access token
+router.post('/refresh', (req, res) => {
+  const refreshToken =
+    req.cookies?.refreshToken ||
+    req.body?.refreshToken ||
+    req.headers['x-refresh-token'];
+
+  if (!refreshToken) {
+    return res.status(401).json({ message: 'No refresh token provided' });
+  }
+
+  jwt.verify(refreshToken, refreshTokenSecret, async (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Invalid or expired refresh token' });
+    }
+
+    const refreshTokenHash = crypto
+      .createHash('sha256')
+      .update(refreshToken)
+      .digest('hex');
+
+    try {
+      const [sessionResults] = await pool
+        .promise()
+        .query('CALL GetSessionByRefreshHash(?)', [refreshTokenHash]);
+      const sessionRow = sessionResults?.[0]?.[0];
+
+      if (!sessionRow) {
+        return res.status(403).json({ message: 'Refresh token not found or revoked' });
+      }
+
+      const newRefreshToken = jwt.sign(
+        { id: user.id, email: user.email },
+        refreshTokenSecret,
+        { expiresIn: refreshTokenTtl }
+      );
+
+      const newRefreshTokenHash = crypto
+        .createHash('sha256')
+        .update(newRefreshToken)
+        .digest('hex');
+
+      const newRefreshExpiresAt = new Date(Date.now() + refreshTokenMs);
+
+      await pool
+        .promise()
+        .query('CALL RotateRefreshToken(?, ?, ?)', [
+          refreshTokenHash,
+          newRefreshTokenHash,
+          newRefreshExpiresAt
+        ]);
+
+      const isProduction = process.env.NODE_ENV === 'production';
+      res.cookie('refreshToken', newRefreshToken, {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        maxAge: refreshTokenMs
+      });
+
+    const newAccessToken = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: accessTokenTtl }
+    );
+
+      return res.json({ token: newAccessToken });
+    } catch (dbErr) {
+      console.warn('Error refreshing token:', dbErr);
+      return res.status(500).json({ message: 'Failed to refresh token' });
+    }
+  });
+});
 
 // Failure route for Google login
 router.get('/failure', (req, res) => {
@@ -75,6 +198,26 @@ router.get('/failure', (req, res) => {
 
 // Logout route
 router.post('/logout', (req, res) => {
+  const refreshToken =
+    req.cookies?.refreshToken ||
+    req.body?.refreshToken ||
+    req.headers['x-refresh-token'];
+
+  if (refreshToken) {
+    const refreshTokenHash = crypto
+      .createHash('sha256')
+      .update(refreshToken)
+      .digest('hex');
+
+    pool
+      .promise()
+      .query('CALL RevokeRefreshToken(?)', [refreshTokenHash])
+      .catch((err) => {
+        console.warn('Error revoking refresh token:', err);
+      });
+  }
+
+  res.clearCookie('refreshToken');
   console.log('logged out');
   res.status(200).json({ message: 'Logged out successfully' });
 });
