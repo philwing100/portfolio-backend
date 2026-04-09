@@ -30,15 +30,15 @@ passport.use(new GoogleStrategy({
       const email = profile.emails[0].value;
 
       // Check if the user already exists
-      const [results] = await pool.promise().query('SELECT * FROM users WHERE google_id = ?', [googleId]);
+      const { rows: results } = await pool.query('SELECT * FROM users WHERE google_id = $1', [googleId]);
       if (results.length > 0) {
         // If user exists, return user
         console.log('retrieving from db' + results[0]);
         return done(null, results[0]);
       } else {
         // If user does not exist, create new user
-        await pool.promise().query('INSERT INTO users (google_id, email) VALUES (?, ?)', [googleId, email]);
-        const [newUserResults] = await pool.promise().query('SELECT * FROM users WHERE google_id = ?', [googleId]);
+        await pool.query('INSERT INTO users (google_id, email) VALUES ($1, $2)', [googleId, email]);
+        const { rows: newUserResults } = await pool.query('SELECT * FROM users WHERE google_id = $1', [googleId]);
         return done(null, newUserResults[0]);
       }
     } catch (err) {
@@ -63,13 +63,13 @@ router.get('/google/callback',
   (req, res) => {
     // If authentication is successful, generate a JWT token and redirect to frontend
     const token = jwt.sign(
-      { id: req.user.userID, email: req.user.email },  // Create a payload with user data
+      { id: req.user.user_id, email: req.user.email },  // Create a payload with user data
       process.env.JWT_SECRET,  // Secret key for JWT signing
       { expiresIn: accessTokenTtl }  // Set token expiry time
     );
 
     const refreshToken = jwt.sign(
-      { id: req.user.userID, email: req.user.email },
+      { id: req.user.user_id, email: req.user.email },
       refreshTokenSecret,
       { expiresIn: refreshTokenTtl }
     );
@@ -87,12 +87,11 @@ router.get('/google/callback',
     });
 
     pool
-      .promise()
       .query(
-        'CALL UpsertSessionWithRefresh(?, ?, ?, ?, ?, ?)',
+        'SELECT upsert_session_with_refresh($1, $2, $3, $4, $5, $6)',
         [
           sessionId,
-          req.user.userID,
+          req.user.user_id,
           refreshExpiresAt.getTime(),
           sessionData,
           refreshTokenHash,
@@ -139,10 +138,9 @@ router.post('/refresh', (req, res) => {
       .digest('hex');
 
     try {
-      const [sessionResults] = await pool
-        .promise()
-        .query('CALL GetSessionByRefreshHash(?)', [refreshTokenHash]);
-      const sessionRow = sessionResults?.[0]?.[0];
+      const { rows: sessionResults } = await pool
+        .query('SELECT * FROM get_session_by_refresh_hash($1)', [refreshTokenHash]);
+      const sessionRow = sessionResults?.[0];
 
       if (!sessionRow) {
         return res.status(403).json({ message: 'Refresh token not found or revoked' });
@@ -162,8 +160,7 @@ router.post('/refresh', (req, res) => {
       const newRefreshExpiresAt = new Date(Date.now() + refreshTokenMs);
 
       await pool
-        .promise()
-        .query('CALL RotateRefreshToken(?, ?, ?)', [
+        .query('SELECT rotate_refresh_token($1, $2, $3)', [
           refreshTokenHash,
           newRefreshTokenHash,
           newRefreshExpiresAt
@@ -210,8 +207,7 @@ router.post('/logout', (req, res) => {
       .digest('hex');
 
     pool
-      .promise()
-      .query('CALL RevokeRefreshToken(?)', [refreshTokenHash])
+      .query('SELECT revoke_refresh_token($1)', [refreshTokenHash])
       .catch((err) => {
         console.warn('Error revoking refresh token:', err);
       });

@@ -7,18 +7,17 @@ const { getTodayDate, normalizeDate } = require('../helpers');
 
 const getStreaks = async function getStreaks(req, res) {
     try {
-        const promisePool = pool.promise();
         const userId = req.user.id;
 
         if (userId) {
-            const [streaks] = await promisePool.query(
-                'CALL Fetch_streaks(?)',
+            const { rows: streaks } = await pool.query(
+                'SELECT * FROM fetch_streaks($1)',
                 [userId]
             );
-            if (streaks?.[0]?.length > 0) {
-                console.log(streaks?.[0]);
+            if (streaks?.length > 0) {
+                console.log(streaks);
                 let resetIDs = [];
-                for (const streak of streaks?.[0]) {
+                for (const streak of streaks) {
                     let temp = CheckForStreakReset(streak);
                     if (temp !== null) {
                         resetIDs.push(temp);
@@ -28,19 +27,19 @@ const getStreaks = async function getStreaks(req, res) {
                 // If we have streaks to reset, call the stored procedure
                 if (resetIDs.length > 0) {
                     const streakIDsString = resetIDs.join(',');
-                    await promisePool.query('CALL Reset_streaks_by_IDs(?, ?)', 
+                    await pool.query('SELECT reset_streaks_by_ids($1, $2)',
                         [userId, streakIDsString]
                     );
 
                     // Fetch updated streaks
-                    const [updatedStreaks] = await promisePool.query(
-                        'CALL Fetch_streaks(?)',
+                    const { rows: updatedStreaks } = await pool.query(
+                        'SELECT * FROM fetch_streaks($1)',
                         [userId]
                     );
-                    return res.json({ success: true, data: updatedStreaks[0] });
+                    return res.json({ success: true, data: updatedStreaks });
                 }
 
-                return res.json({ success: true, data: streaks[0] });
+                return res.json({ success: true, data: streaks });
             } else {
                 return res.json({ success: true, message: "No streaks found for this user" });
             }
@@ -54,15 +53,15 @@ const getStreaks = async function getStreaks(req, res) {
 };
 
 function CheckForStreakReset(streak) {
-       let prev = new Date(normalizeDate(streak.lastUpdated));
+       let prev = new Date(normalizeDate(streak.last_updated));
     let curr = new Date(getTodayDate());
-    
+
     // Convert milliseconds to days
     const daysDifference = Math.floor((curr - prev) / (1000 * 60 * 60 * 24));
     //console.log('days difference: ' + daysDifference);
     if (daysDifference > 7) {
-        console.log(`Days difference: ${daysDifference}, resetting streak: ${streak.streakID}`);
-        return streak.streakID;
+        console.log(`Days difference: ${daysDifference}, resetting streak: ${streak.streak_id}`);
+        return streak.streak_id;
     }
     let pdotw = (prev.getDay() + 6) % 7; //Need the index of the day of the week.
     let cdotw = (curr.getDay() + 6) %7;
@@ -73,18 +72,17 @@ function CheckForStreakReset(streak) {
     for (let i = cdotw + 6; i > pdotw+6; i--) { //Start on the day and count backwards
     //     console.log('dec ' + (days.substring(pdotw+1,i+1)));
         if (days.substring(i,i+1) != 1) {
-     //       console.log("returning, streak broken: " + streak.streakID);
-            return streak.streakID;
+     //       console.log("returning, streak broken: " + streak.streak_id);
+            return streak.streak_id;
         }
     }
-  //  console.log("Passed: " + streak.streakID );
+  //  console.log("Passed: " + streak.streak_id );
     return null;
 }
 
 const incrementStreak = async (req, res) => {
     try {
-        //Still doesn't do anything if the 
-        const promisePool = pool.promise();
+        //Still doesn't do anything if the
         const userId = req.user.id;
         const parsed = JSON.parse(req.body.data);
         const {
@@ -92,9 +90,9 @@ const incrementStreak = async (req, res) => {
         } = parsed;
 
         if (userId && streakID != null) {
-            const [rows] = await promisePool.query('CALL Increment_streak(?, ?)', [streakID, userId]);
+            const { rows } = await pool.query('SELECT * FROM increment_streak($1, $2)', [streakID, userId]);
 
-            const affectedRows = rows?.[0]?.[0]?.affectedRows;
+            const affectedRows = rows?.[0]?.affected_rows;
             if (affectedRows > 0) {
                 return res.json({ success: true, message: 'Streak incremented.' });
             } else {
@@ -112,7 +110,6 @@ const incrementStreak = async (req, res) => {
 
 const updateStreak = async (req, res) => {
     try {
-        const promisePool = pool.promise();
         const userId = req.user.id;
 
         // Parse and extract the values
@@ -125,7 +122,7 @@ const updateStreak = async (req, res) => {
         //console.log("full object:", parsed.updatedHabit);
 
         if (userId && id != null) {
-            await promisePool.query('CALL Update_streak(?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+            await pool.query('SELECT update_streak($1, $2, $3, $4, $5, $6, $7, $8, $9)', [
                 id, userId, title, notes, goal, tag, days, lastUpdated, color
             ]);
             return res.json({ success: true });
@@ -140,13 +137,12 @@ const updateStreak = async (req, res) => {
 
 const deleteStreak = async (req, res) => {
     try {
-        const promisePool = pool.promise();
         const userId = req.user.id;
         const parsed = JSON.parse(req.body.data);
         const { habitId } = parsed;
 
         if (userId && habitId != null) {
-            await promisePool.query('CALL Delete_streak(?, ?)', [habitId, userId]);
+            await pool.query('SELECT delete_streak($1, $2)', [habitId, userId]);
             return res.json({ success: true });
         } else {
             return res.status(400).json({ message: 'Missing streakID or user not authenticated' });
