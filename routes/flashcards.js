@@ -453,4 +453,103 @@ router.get('/study', async (req, res) => {
   }
 });
 
+// ─── FOLDERS ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/flashcards/folders
+ * Returns all folders for the authenticated user, ordered by creation date.
+ */
+router.get('/folders', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT folder_id, user_id, title, color, created_at, updated_at
+         FROM flashcard_folders
+        WHERE user_id = $1
+        ORDER BY created_at ASC`,
+      [req.user.id],
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('Error fetching folders:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/flashcards/folders
+ * Body: { title: string, color?: string }
+ * Creates a new folder.
+ */
+router.post('/folders', async (req, res) => {
+  try {
+    const { title, color = '#4CAF50' } = req.body;
+    if (!title?.trim()) {
+      return res.status(400).json({ message: 'title is required' });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO flashcard_folders (user_id, title, color)
+            VALUES ($1, $2, $3)
+       RETURNING folder_id, user_id, title, color, created_at, updated_at`,
+      [req.user.id, title.trim(), color],
+    );
+    return res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('Error creating folder:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
+ * PUT /api/flashcards/folders/:folderId
+ * Body: { title?: string, color?: string }
+ * Updates folder title and/or color.
+ */
+router.put('/folders/:folderId', async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    const { title, color } = req.body;
+
+    if (!title?.trim() && !color) {
+      return res.status(400).json({ message: 'Provide title or color to update' });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE flashcard_folders
+          SET title      = COALESCE(NULLIF($3, ''), title),
+              color      = COALESCE($4, color),
+              updated_at = NOW()
+        WHERE folder_id = $1 AND user_id = $2
+       RETURNING folder_id, user_id, title, color, created_at, updated_at`,
+      [folderId, req.user.id, title?.trim() ?? '', color ?? null],
+    );
+
+    if (!rows[0]) return res.status(404).json({ message: 'Folder not found' });
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('Error updating folder:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
+ * DELETE /api/flashcards/folders/:folderId
+ * Deletes a folder. Sets are not deleted — folderId in their description JSON
+ * becomes stale and the frontend handles cleanup client-side.
+ */
+router.delete('/folders/:folderId', async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    const { rowCount } = await pool.query(
+      `DELETE FROM flashcard_folders
+        WHERE folder_id = $1 AND user_id = $2`,
+      [folderId, req.user.id],
+    );
+    if (rowCount === 0) return res.status(404).json({ message: 'Folder not found' });
+    return res.json({ success: true, message: 'Folder deleted' });
+  } catch (err) {
+    console.error('Error deleting folder:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
 module.exports = router;
