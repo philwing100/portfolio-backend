@@ -70,13 +70,12 @@ const createList = async function createList(req, res) {
       return res.status(400).json({ message: 'Invalid list data' });
     }
 
-    const promisePool = pool.promise();
-    const [existingRows] = await promisePool.query(
-      'CALL Fetch_list_object(?, ?, ?)',
+    const { rows: existingRows } = await pool.query(
+      'SELECT * FROM fetch_list_object($1, $2, $3)',
       [userId, parentPage, listDate]
     );
 
-    const existingRow = existingRows?.[0]?.[0];
+    const existingRow = existingRows?.[0];
     if (existingRow) {
       const existingLists = parseJsonIfString(existingRow.lists_json, []);
       const normalizedExisting = stableStringify(existingLists);
@@ -99,8 +98,8 @@ const createList = async function createList(req, res) {
     const resolvedTimestamp = normalizeTimestampInput(timestamp) || new Date().toISOString();
     const resolvedTimestampDb = toMySqlDateTime(resolvedTimestamp);
 
-    await promisePool.query(
-      'CALL Update_list_object(?, ?, ?, ?, ?)',
+    await pool.query(
+      'SELECT update_list_object($1, $2, $3, $4, $5)',
       [userId, parentPage, listDate, JSON.stringify(lists), resolvedTimestampDb]
     );
 
@@ -123,7 +122,6 @@ const createList = async function createList(req, res) {
 // 2. Read all lists (or one list by ID)
 const getList = async function getList(req, res) {
   try {
-    const promisePool = pool.promise();
     const userId = req.user.id; // Get the user ID from the JWT token
     const { list_title: listTitle, parent_page: parentPage, date: listDate } = req.body.params || {};
 
@@ -132,12 +130,12 @@ const getList = async function getList(req, res) {
     }
 
     if (parentPage && listDate) {
-      const [rows] = await promisePool.query(
-        'CALL Fetch_list_object(?, ?, ?)',
+      const { rows } = await pool.query(
+        'SELECT * FROM fetch_list_object($1, $2, $3)',
         [userId, parentPage, listDate]
       );
 
-      const row = rows?.[0]?.[0];
+      const row = rows?.[0];
       if (!row) {
         return res.json({ success: true, message: 'No list exists for that parent_page/date' });
       }
@@ -153,16 +151,16 @@ const getList = async function getList(req, res) {
       });
     }
 
-    const [lists] = await promisePool.query(
-      'CALL Fetch_list(?, ?)', [userId, listTitle]
+    const { rows: lists } = await pool.query(
+      'SELECT * FROM fetch_list($1, $2)', [userId, listTitle]
     );
 
-    if (lists?.[0]?.[0]?.listID != null) {
-      const [list_items] = await promisePool.query(
-        'CALL Fetch_list_item(?)', lists[0][0].listID
+    if (lists?.[0]?.list_id != null) {
+      const { rows: listItems } = await pool.query(
+        'SELECT * FROM fetch_list_item($1)', [lists[0].list_id]
       );
 
-      const merged = { ...lists, ...list_items };
+      const merged = { ...lists[0], items: listItems };
       return res.json({ success: true, data: merged });
     }
 

@@ -1,5 +1,5 @@
 //helpers.js
-export function getTodayDate() {
+function getTodayDate() {
     const today = new Date();
     const year = today.getFullYear();
     const month = (today.getMonth() + 1).toString().padStart(2, "0");
@@ -7,7 +7,7 @@ export function getTodayDate() {
     return `${year}-${month}-${day}`; // Format: YYYY-MM-DD
 }
 
-export function normalizeDate(datetimeString) {
+function normalizeDate(datetimeString) {
     // Create a Date object from the MySQL DATETIME string
     const date = new Date(datetimeString);
 
@@ -20,8 +20,10 @@ export function normalizeDate(datetimeString) {
     return `${year}-${month}-${day}`;
 }
 
-export function getWeekDayFromDate(datetimeString) {
+function getWeekDayFromDate(datetimeString) {
   const date = new Date(datetimeString);
   const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",];
   return weekdays[date.getDay()];
 }
+
+module.exports = { getTodayDate, normalizeDate, getWeekDayFromDate };
