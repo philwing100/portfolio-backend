@@ -74,19 +74,26 @@ async function withTransaction(fn) {
 // ─── SETS ─────────────────────────────────────────────────────────────────────
 
 /**
- * GET /api/flashcards/sets?page=1&limit=20
- * Returns paginated set list for the authenticated user, each with card_count.
+ * GET /api/flashcards/sets?page=1&limit=20&folder_id=<uuid>
+ * Returns paginated set list for the authenticated user, each with card_count and due_count.
+ * Pass folder_id to scope results to a single folder; omit for all sets.
  */
 router.get('/sets', async (req, res) => {
   try {
-    const userId = req.user.id;
-    const page   = Math.max(1, parseInt(req.query.page)  || 1);
-    const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-    const offset = (page - 1) * limit;
+    const userId   = req.user.id;
+    const page     = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset   = (page - 1) * limit;
+    const folderId = req.query.folder_id || null;
+
+    const countWhere = folderId
+      ? 'WHERE user_id = $1 AND folder_id = $2'
+      : 'WHERE user_id = $1';
+    const countArgs  = folderId ? [userId, folderId] : [userId];
 
     const [{ rows: sets }, { rows: countRows }] = await Promise.all([
-      pool.query('SELECT * FROM fetch_flashcard_sets($1, $2, $3)', [userId, limit, offset]),
-      pool.query('SELECT COUNT(*) FROM flashcard_sets WHERE user_id = $1', [userId]),
+      pool.query('SELECT * FROM fetch_flashcard_sets($1, $2, $3, $4)', [userId, limit, offset, folderId]),
+      pool.query(`SELECT COUNT(*) FROM flashcard_sets ${countWhere}`, countArgs),
     ]);
 
     const total = parseInt(countRows[0].count, 10);
@@ -103,19 +110,19 @@ router.get('/sets', async (req, res) => {
 
 /**
  * POST /api/flashcards/sets
- * Body: { title, description?, tags? }
- * Creates a new flashcard set.
+ * Body: { title, description?, tags?, folder_id? }
+ * Creates a new flashcard set, optionally placed inside a folder.
  */
 router.post('/sets', async (req, res) => {
   try {
     const userId = req.user.id;
-    const { title, description = null, tags = [] } = req.body;
+    const { title, description = null, tags = [], folder_id = null } = req.body;
 
     if (!title) return res.status(400).json({ message: 'title is required' });
 
     const { rows } = await pool.query(
-      'SELECT * FROM create_flashcard_set($1, $2, $3, $4)',
-      [userId, title, description, tags],
+      'SELECT * FROM create_flashcard_set($1, $2, $3, $4, $5)',
+      [userId, title, description, tags, folder_id],
     );
     return res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
@@ -219,20 +226,21 @@ router.get('/sets/:setId', async (req, res) => {
 
 /**
  * PUT /api/flashcards/sets/:setId
- * Body: { title, description?, tags? }
- * Updates set metadata. Does not touch cards.
+ * Body: { title, description?, tags?, folder_id? }
+ * Updates set metadata. Pass folder_id: null to remove a set from its folder.
+ * Does not touch cards.
  */
 router.put('/sets/:setId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.params;
-    const { title, description = null, tags = [] } = req.body;
+    const { title, description = null, tags = [], folder_id = null } = req.body;
 
     if (!title) return res.status(400).json({ message: 'title is required' });
 
     const { rows } = await pool.query(
-      'SELECT * FROM update_flashcard_set($1, $2, $3, $4, $5)',
-      [setId, userId, title, description, tags],
+      'SELECT * FROM update_flashcard_set($1, $2, $3, $4, $5, $6)',
+      [setId, userId, title, description, tags, folder_id],
     );
     if (!rows[0]) return res.status(404).json({ message: 'Set not found' });
     return res.json({ success: true, data: rows[0] });
@@ -259,6 +267,48 @@ router.delete('/sets/:setId', async (req, res) => {
     return res.json({ success: true, message: 'Set deleted' });
   } catch (err) {
     console.error('Error deleting set:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// ─── ALL CARDS (ANKI ALL) ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/flashcards/cards/all?page=1&limit=100
+ * Returns every card the user owns across all sets, joined with set title and folder_id.
+ * Useful for bulk export or a unified ANKI-ALL study view.
+ * Omit page/limit to retrieve all cards in one response.
+ */
+router.get('/cards/all', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const paginate = req.query.page != null || req.query.limit != null;
+    const page   = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit  = Math.min(500, Math.max(1, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
+
+    const [{ rows }, { rows: countRows }] = await Promise.all([
+      pool.query(
+        'SELECT * FROM fetch_all_flashcard_cards($1, $2, $3)',
+        [userId, paginate ? limit : null, paginate ? offset : 0],
+      ),
+      paginate
+        ? pool.query('SELECT COUNT(*) FROM flashcard_cards WHERE user_id = $1', [userId])
+        : Promise.resolve({ rows: [{ count: null }] }),
+    ]);
+
+    if (!paginate) {
+      return res.json({ success: true, data: rows });
+    }
+
+    const total = parseInt(countRows[0].count, 10);
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    console.error('Error fetching all cards:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
 });
@@ -453,16 +503,59 @@ router.get('/study', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/flashcards/study/folder/:folderId?new_limit=20
+ *
+ * Study session scoped to a folder and ALL of its nested subfolders (recursive).
+ * Returns all cards due for review today plus up to new_limit unseen cards whose
+ * parent set lives anywhere in the folder subtree.
+ *
+ * Returns 404 when the folder doesn't exist or isn't owned by the user.
+ *
+ * Response shape: { success, data: { due: [...], new: [...] } }
+ */
+router.get('/study/folder/:folderId', async (req, res) => {
+  try {
+    const userId   = req.user.id;
+    const { folderId } = req.params;
+    const newLimit = Math.max(0, Math.min(200, parseInt(req.query.new_limit) || 20));
+
+    const { rows } = await pool.query(
+      'SELECT * FROM fetch_study_session_for_folder($1, $2, $3)',
+      [folderId, userId, newLimit],
+    );
+
+    // Empty result with a folder param means the folder wasn't found / not owned
+    if (rows.length === 0) {
+      const { rows: folderCheck } = await pool.query(
+        'SELECT 1 FROM flashcard_folders WHERE folder_id = $1 AND user_id = $2',
+        [folderId, userId],
+      );
+      if (folderCheck.length === 0) {
+        return res.status(404).json({ message: 'Folder not found' });
+      }
+    }
+
+    const due      = rows.filter(r => r.card_type === 'review');
+    const newCards = rows.filter(r => r.card_type === 'new');
+    return res.json({ success: true, data: { due, new: newCards } });
+  } catch (err) {
+    console.error('Error fetching folder study session:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
 // ─── FOLDERS ──────────────────────────────────────────────────────────────────
 
 /**
  * GET /api/flashcards/folders
  * Returns all folders for the authenticated user, ordered by creation date.
+ * Includes parent_folder_id so the frontend can reconstruct the tree.
  */
 router.get('/folders', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT folder_id, user_id, title, color, created_at, updated_at
+      `SELECT folder_id, user_id, parent_folder_id, title, color, created_at, updated_at
          FROM flashcard_folders
         WHERE user_id = $1
         ORDER BY created_at ASC`,
@@ -477,23 +570,24 @@ router.get('/folders', async (req, res) => {
 
 /**
  * POST /api/flashcards/folders
- * Body: { title: string, color?: string }
- * Creates a new folder.
+ * Body: { title: string, color?: string, parent_folder_id?: uuid }
+ * Creates a new folder, optionally nested inside an existing folder.
  */
 router.post('/folders', async (req, res) => {
   try {
-    const { title, color = '#4CAF50' } = req.body;
+    const { title, color = '#4CAF50', parent_folder_id = null } = req.body;
     if (!title?.trim()) {
       return res.status(400).json({ message: 'title is required' });
     }
     const { rows } = await pool.query(
-      `INSERT INTO flashcard_folders (user_id, title, color)
-            VALUES ($1, $2, $3)
-       RETURNING folder_id, user_id, title, color, created_at, updated_at`,
-      [req.user.id, title.trim(), color],
+      'SELECT * FROM create_flashcard_folder($1, $2, $3, $4)',
+      [req.user.id, title.trim(), color, parent_folder_id],
     );
     return res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
+    if (err.message?.includes('Parent folder not found')) {
+      return res.status(400).json({ message: err.message });
+    }
     console.error('Error creating folder:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
@@ -501,31 +595,36 @@ router.post('/folders', async (req, res) => {
 
 /**
  * PUT /api/flashcards/folders/:folderId
- * Body: { title?: string, color?: string }
- * Updates folder title and/or color.
+ * Body: { title?: string, color?: string, parent_folder_id?: uuid | null }
+ * Updates folder title, color, and/or parent.
+ * To move a folder to the top level send parent_folder_id: null explicitly.
+ * Omit parent_folder_id entirely to leave the current parent unchanged.
+ * Returns 400 on a circular-reference attempt.
  */
 router.put('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
     const { title, color } = req.body;
 
-    if (!title?.trim() && !color) {
-      return res.status(400).json({ message: 'Provide title or color to update' });
+    // Only update parent when the key is present in the body (explicit null = unparent)
+    const setParent     = 'parent_folder_id' in req.body;
+    const newParentId   = setParent ? (req.body.parent_folder_id ?? null) : null;
+
+    if (!title?.trim() && !color && !setParent) {
+      return res.status(400).json({ message: 'Provide title, color, or parent_folder_id to update' });
     }
 
     const { rows } = await pool.query(
-      `UPDATE flashcard_folders
-          SET title      = COALESCE(NULLIF($3, ''), title),
-              color      = COALESCE($4, color),
-              updated_at = NOW()
-        WHERE folder_id = $1 AND user_id = $2
-       RETURNING folder_id, user_id, title, color, created_at, updated_at`,
-      [folderId, req.user.id, title?.trim() ?? '', color ?? null],
+      'SELECT * FROM update_flashcard_folder($1, $2, $3, $4, $5, $6)',
+      [folderId, req.user.id, title?.trim() ?? '', color ?? null, setParent, newParentId],
     );
 
     if (!rows[0]) return res.status(404).json({ message: 'Folder not found' });
     return res.json({ success: true, data: rows[0] });
   } catch (err) {
+    if (err.message?.includes('circular reference') || err.message?.includes('Parent folder not found')) {
+      return res.status(400).json({ message: err.message });
+    }
     console.error('Error updating folder:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
@@ -533,15 +632,15 @@ router.put('/folders/:folderId', async (req, res) => {
 
 /**
  * DELETE /api/flashcards/folders/:folderId
- * Deletes a folder. Sets are not deleted — folderId in their description JSON
- * becomes stale and the frontend handles cleanup client-side.
+ * Deletes a folder. Child folders have their parent_folder_id set to NULL (they
+ * become top-level). Sets inside the folder have their folder_id set to NULL.
+ * Neither child folders nor sets are themselves deleted.
  */
 router.delete('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
     const { rowCount } = await pool.query(
-      `DELETE FROM flashcard_folders
-        WHERE folder_id = $1 AND user_id = $2`,
+      `DELETE FROM flashcard_folders WHERE folder_id = $1 AND user_id = $2`,
       [folderId, req.user.id],
     );
     if (rowCount === 0) return res.status(404).json({ message: 'Folder not found' });

@@ -102,17 +102,23 @@ NODE_ENV                    "production" enables secure/sameSite=none cookies
 ### Flashcards (`/api/flashcards`) — REST style
 | Route | Method | Purpose |
 |---|---|---|
-| `/sets` | GET | Paginated list of sets (`?page=1&limit=20`) |
-| `/sets` | POST | Create a set (`{ title, description?, tags? }`) |
+| `/sets` | GET | Paginated list of sets (`?page=1&limit=20&folder_id=`) |
+| `/sets` | POST | Create a set (`{ title, description?, tags?, folder_id? }`) |
 | `/sets/bulk` | POST | Create set + cards from delimited text |
 | `/sets/:setId` | GET | Set metadata + all cards |
-| `/sets/:setId` | PUT | Update set metadata |
+| `/sets/:setId` | PUT | Update set metadata (`{ title, description?, tags?, folder_id? }`) |
 | `/sets/:setId` | DELETE | Delete set and all its cards (cascade) |
 | `/sets/:setId/cards` | POST | Add one or more cards (`{ term, definition }` or array) |
+| `/cards/all` | GET | All cards for the user across every set (`?page=&limit=`) |
 | `/cards/:cardId` | PUT | Update card content; resets SM-2 if content changed |
 | `/cards/:cardId` | DELETE | Delete a card |
 | `/cards/:cardId/review` | POST | Submit SM-2 grade (0–5), persists new state |
 | `/study` | GET | Study session: due cards + new cards (`?tags=&new_limit=20`) |
+| `/study/folder/:folderId` | GET | Study session scoped to folder + all subfolders recursively |
+| `/folders` | GET | All folders for the user (flat list with `parent_folder_id`) |
+| `/folders` | POST | Create folder (`{ title, color?, parent_folder_id? }`) |
+| `/folders/:folderId` | PUT | Update folder (`{ title?, color?, parent_folder_id? }`) |
+| `/folders/:folderId` | DELETE | Delete folder; children/sets become top-level (SET NULL) |
 
 ---
 
@@ -138,8 +144,14 @@ NODE_ENV                    "production" enables secure/sameSite=none cookies
 - `streak_id` (SERIAL PK), `user_id` (FK), `title`, `current_streak`, `highest_streak`
 - `days` (SMALLINT bitmask — which days of week), `last_updated` (DATE), `color` (CHAR 7)
 
+**`flashcard_folders`**
+- `folder_id` (UUID PK), `user_id` (FK), `title`, `color`
+- `parent_folder_id` (nullable FK → self, ON DELETE SET NULL) — enables arbitrary nesting
+- `created_at`, `updated_at` (auto-update trigger)
+
 **`flashcard_sets`**
 - `set_id` (UUID PK), `user_id` (FK), `title`, `description`, `tags` (TEXT[])
+- `folder_id` (nullable FK → `flashcard_folders`, ON DELETE SET NULL)
 - `created_at`, `updated_at` (auto-update trigger)
 
 **`flashcard_cards`**
