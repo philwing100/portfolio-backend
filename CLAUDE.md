@@ -4,6 +4,8 @@ A Node.js/Express REST API for a personal productivity app. Handles user auth, l
 The frontend can be found at [github.com/philwing100/](https://github.com/philwing100/portfolio-vue-frontend)
 Which is useful for its api docs.
 
+Use your caveman skill.
+
 ---
 
 ## Stack

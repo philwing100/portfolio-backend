@@ -52,6 +52,9 @@ function contentHash(term, definition) {
   return crypto.createHash('sha256').update(`${term}|${definition}`).digest('hex');
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
+
 /**
  * Wraps a multi-step DB operation in a BEGIN/COMMIT transaction.
  * Automatically rolls back and releases the client on error.
@@ -84,7 +87,11 @@ router.get('/sets', async (req, res) => {
     const page     = Math.max(1, parseInt(req.query.page)  || 1);
     const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const offset   = (page - 1) * limit;
-    const folderId = req.query.folder_id || null;
+    const folderIdRaw = req.query.folder_id || null;
+    if (folderIdRaw && !isUuid(folderIdRaw)) {
+      return res.status(400).json({ message: 'folder_id must be a UUID' });
+    }
+    const folderId = folderIdRaw;
 
     const countWhere = folderId
       ? 'WHERE user_id = $1 AND folder_id = $2'
@@ -177,8 +184,8 @@ router.post('/sets/bulk', async (req, res) => {
 
     const result = await withTransaction(async (client) => {
       const { rows: setRows } = await client.query(
-        'SELECT * FROM create_flashcard_set($1, $2, $3, $4)',
-        [userId, title, description, tags],
+        'SELECT * FROM create_flashcard_set($1, $2, $3, $4, $5)',
+        [userId, title, description, tags, null],
       );
       const set = setRows[0];
 
@@ -210,6 +217,7 @@ router.get('/sets/:setId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.params;
+    if (!isUuid(setId)) return res.status(404).json({ message: 'Set not found' });
 
     const [{ rows: metaRows }, { rows: cardRows }] = await Promise.all([
       pool.query('SELECT * FROM fetch_flashcard_set_meta($1, $2)', [setId, userId]),
@@ -234,6 +242,7 @@ router.put('/sets/:setId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.params;
+    if (!isUuid(setId)) return res.status(404).json({ message: 'Set not found' });
     const { title, description = null, tags = [], folder_id = null } = req.body;
 
     if (!title) return res.status(400).json({ message: 'title is required' });
@@ -258,6 +267,7 @@ router.delete('/sets/:setId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.params;
+    if (!isUuid(setId)) return res.status(404).json({ message: 'Set not found' });
 
     const { rows } = await pool.query(
       'SELECT delete_flashcard_set($1, $2) AS deleted',
@@ -324,6 +334,7 @@ router.post('/sets/:setId/cards', async (req, res) => {
   try {
     const userId = req.user.id;
     const { setId } = req.params;
+    if (!isUuid(setId)) return res.status(404).json({ message: 'Set not found' });
 
     const input = Array.isArray(req.body) ? req.body : [req.body];
     const valid = input.filter(c => c.term && c.definition);
@@ -373,6 +384,7 @@ router.put('/cards/:cardId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { cardId } = req.params;
+    if (!isUuid(cardId)) return res.status(404).json({ message: 'Card not found' });
     const { term, definition } = req.body;
 
     if (!term || !definition) {
@@ -400,6 +412,7 @@ router.delete('/cards/:cardId', async (req, res) => {
   try {
     const userId = req.user.id;
     const { cardId } = req.params;
+    if (!isUuid(cardId)) return res.status(404).json({ message: 'Card not found' });
 
     const { rows } = await pool.query(
       'SELECT delete_flashcard_card($1, $2) AS deleted',
@@ -431,6 +444,7 @@ router.post('/cards/:cardId/review', async (req, res) => {
   try {
     const userId = req.user.id;
     const { cardId } = req.params;
+    if (!isUuid(cardId)) return res.status(404).json({ message: 'Card not found' });
     const { grade } = req.body;
 
     if (grade == null || !Number.isInteger(grade) || grade < 0 || grade > 5) {
@@ -518,6 +532,7 @@ router.get('/study/folder/:folderId', async (req, res) => {
   try {
     const userId   = req.user.id;
     const { folderId } = req.params;
+    if (!isUuid(folderId)) return res.status(404).json({ message: 'Folder not found' });
     const newLimit = Math.max(0, Math.min(200, parseInt(req.query.new_limit) || 20));
 
     const { rows } = await pool.query(
@@ -604,6 +619,7 @@ router.post('/folders', async (req, res) => {
 router.put('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
+    if (!isUuid(folderId)) return res.status(404).json({ message: 'Folder not found' });
     const { title, color } = req.body;
 
     // Only update parent when the key is present in the body (explicit null = unparent)
@@ -639,6 +655,7 @@ router.put('/folders/:folderId', async (req, res) => {
 router.delete('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
+    if (!isUuid(folderId)) return res.status(404).json({ message: 'Folder not found' });
     const { rowCount } = await pool.query(
       `DELETE FROM flashcard_folders WHERE folder_id = $1 AND user_id = $2`,
       [folderId, req.user.id],
