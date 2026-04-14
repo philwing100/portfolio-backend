@@ -281,6 +281,41 @@ router.delete('/sets/:setId', async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/flashcards/sets/:setId/move
+ * Body: { folder_id: uuid | null }
+ * Moves a set to another folder. Pass folder_id: null to unorganise.
+ * Returns 400 if the target folder doesn't belong to the user, 404 if the set doesn't.
+ */
+router.patch('/sets/:setId/move', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { setId } = req.params;
+    if (!isUuid(setId)) return res.status(404).json({ message: 'Set not found' });
+
+    if (!('folder_id' in req.body)) {
+      return res.status(400).json({ message: 'folder_id is required (use null to unorganise)' });
+    }
+    const folderId = req.body.folder_id ?? null;
+    if (folderId !== null && !isUuid(folderId)) {
+      return res.status(400).json({ message: 'folder_id must be a UUID or null' });
+    }
+
+    const { rows } = await pool.query(
+      'SELECT * FROM move_flashcard_set($1, $2, $3)',
+      [setId, userId, folderId],
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Set not found' });
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    if (err.message?.includes('Folder not found')) {
+      return res.status(400).json({ message: err.message });
+    }
+    console.error('Error moving set:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
 // ─── ALL CARDS (ANKI ALL) ─────────────────────────────────────────────────────
 
 /**
@@ -579,6 +614,85 @@ router.get('/folders', async (req, res) => {
     return res.json({ success: true, data: rows });
   } catch (err) {
     console.error('Error fetching folders:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/flashcards/folders/:folderId
+ * Returns the folder plus its direct children: subfolders and sets (one level deep).
+ * Pass folderId = "root" to fetch top-level folders and unorganised sets;
+ * the returned `folder` field is null in that case.
+ * Sets include card_count and due_count. Does not recurse.
+ */
+router.get('/folders/:folderId', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { folderId } = req.params;
+    const isRoot = folderId === 'root';
+
+    if (!isRoot && !isUuid(folderId)) {
+      return res.status(404).json({ message: 'Folder not found' });
+    }
+    const scopeId = isRoot ? null : folderId;
+
+    let folder = null;
+    if (!isRoot) {
+      const { rows } = await pool.query(
+        'SELECT * FROM fetch_flashcard_folder_meta($1, $2)',
+        [scopeId, userId],
+      );
+      if (!rows[0]) return res.status(404).json({ message: 'Folder not found' });
+      folder = rows[0];
+    }
+
+    const [{ rows: subfolders }, { rows: sets }] = await Promise.all([
+      pool.query('SELECT * FROM fetch_folder_subfolders($1, $2)', [userId, scopeId]),
+      pool.query('SELECT * FROM fetch_folder_sets($1, $2)',       [userId, scopeId]),
+    ]);
+
+    return res.json({ success: true, data: { folder, subfolders, sets } });
+  } catch (err) {
+    console.error('Error fetching folder contents:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
+ * PATCH /api/flashcards/folders/:folderId/move
+ * Body: { parent_folder_id: uuid | null }
+ * Moves a folder under a new parent (or to top-level with null).
+ * Returns 400 on circular reference or when the target parent doesn't belong to the user.
+ */
+router.patch('/folders/:folderId/move', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { folderId } = req.params;
+    if (!isUuid(folderId)) return res.status(404).json({ message: 'Folder not found' });
+
+    if (!('parent_folder_id' in req.body)) {
+      return res.status(400).json({ message: 'parent_folder_id is required (use null for top-level)' });
+    }
+    const newParent = req.body.parent_folder_id ?? null;
+    if (newParent !== null && !isUuid(newParent)) {
+      return res.status(400).json({ message: 'parent_folder_id must be a UUID or null' });
+    }
+    if (newParent === folderId) {
+      return res.status(400).json({ message: 'A folder cannot be its own parent' });
+    }
+
+    // update_flashcard_folder preserves title/color when empty/null is passed.
+    const { rows } = await pool.query(
+      'SELECT * FROM update_flashcard_folder($1, $2, $3, $4, $5, $6)',
+      [folderId, userId, '', null, true, newParent],
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Folder not found' });
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    if (err.message?.includes('circular reference') || err.message?.includes('Parent folder not found')) {
+      return res.status(400).json({ message: err.message });
+    }
+    console.error('Error moving folder:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
 });
