@@ -619,6 +619,65 @@ router.get('/folders', async (req, res) => {
 });
 
 /**
+ * GET /api/flashcards/folders/tree
+ * Returns the full folder hierarchy for the user, with sets nested inside
+ * each folder and unorganised sets at the root.
+ *
+ * Response shape:
+ *   { success, data: { folders: [rootFolder, ...], unorganised_sets: [...] } }
+ *
+ * Each folder node:
+ *   { folder_id, user_id, title, color, parent_folder_id,
+ *     created_at, updated_at, subfolders: [...], sets: [...] }
+ *
+ * Each set carries card_count and due_count.
+ * Orphan folders (parent_folder_id points at a deleted folder — shouldn't happen
+ * thanks to ON DELETE SET NULL but guarded anyway) are hoisted to the root.
+ */
+router.get('/folders/tree', async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [{ rows: folders }, { rows: sets }] = await Promise.all([
+      pool.query(
+        `SELECT folder_id, user_id, parent_folder_id, title, color, created_at, updated_at
+           FROM flashcard_folders
+          WHERE user_id = $1
+          ORDER BY created_at ASC`,
+        [userId],
+      ),
+      // NULL p_folder_id → every set for the user. Huge limit = effectively unbounded.
+      pool.query('SELECT * FROM fetch_flashcard_sets($1, $2, $3, $4)', [userId, 1000000, 0, null]),
+    ]);
+
+    const nodes = new Map();
+    for (const f of folders) {
+      nodes.set(f.folder_id, { ...f, subfolders: [], sets: [] });
+    }
+
+    const roots = [];
+    for (const f of folders) {
+      const node = nodes.get(f.folder_id);
+      const parent = f.parent_folder_id && nodes.get(f.parent_folder_id);
+      if (parent) parent.subfolders.push(node);
+      else        roots.push(node);
+    }
+
+    const unorganised = [];
+    for (const s of sets) {
+      const parent = s.folder_id && nodes.get(s.folder_id);
+      if (parent) parent.sets.push(s);
+      else        unorganised.push(s);
+    }
+
+    return res.json({ success: true, data: { folders: roots, unorganised_sets: unorganised } });
+  } catch (err) {
+    console.error('Error fetching folder tree:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/**
  * GET /api/flashcards/folders/:folderId
  * Returns the folder plus its direct children: subfolders and sets (one level deep).
  * Pass folderId = "root" to fetch top-level folders and unorganised sets;
